@@ -2,3 +2,4 @@
 # The following files contain your database credentials and other personal data.
 
 .DS_store
+vendor/*
