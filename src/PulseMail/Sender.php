@@ -26,27 +26,14 @@
 
 namespace PulseMail;
 
-use ObjectModel;
-use Context;
-use Validate;
-use Language;
-use Hook;
 use Swift_Message;
-use Tools;
 use Swift_Image;
 use Swift_Plugins_DecoratorPlugin;
 use Swift_Attachment;
-use ShopUrl;
 use Swift_SwiftException;
-use PrestaShopLogger;
-use Db;
 use Swift_SmtpTransport;
 use Swift_SendmailTransport;
 use Swift_Mailer;
-use Configuration;
-use Shop;
-use Link;
-use Mail;
 
 class Sender
 {
@@ -60,143 +47,74 @@ class Sender
      */
     const METHOD_DISABLE = 3;
 
-    /**
-     * Send Email.
-     *
-     * @param int $idLang Language ID of the email (to translate the template)
-     * @param string $template Template: the name of template not be a var but a string !
-     * @param string $subject Subject of the email
-     * @param array $templateVars Template variables for the email
-     * @param string $to To email
-     * @param string $toName To name
-     * @param string $from From email
-     * @param string $fromName To email
-     * @param array $fileAttachment array with three parameters (content, mime and name).
-     *                              You can use an array of array to attach multiple files
-     * @param bool $mode_smtp SMTP mode (deprecated)
-     * @param string $templatePath Template path
-     * @param bool $die Die after error
-     * @param int $idShop Shop ID
-     * @param string $bcc Bcc recipient address. You can use an array of array to send to multiple recipients
-     * @param string $replyTo Reply-To recipient address
-     * @param string $replyToName Reply-To recipient name
-     *
-     * @return bool|int Whether sending was successful. If not at all, false, otherwise amount of recipients succeeded.
-     */
+    public static function getMultiple( Array $configs )
+    {
+        $config = array();
+        foreach ($configs as $config_key) {
+            if( defined(''.$config_key) ){
+                $config[$config_key] = defined(''.$config_key);
+            }else{
+                $config[$config_key] = false;
+            }
+        }
+        return $config;
+    }
+
     public static function send(
-        $idLang,
-        $template,
+        $templateHtml,
         $subject,
-        $templateVars,
         $to,
         $toName = null,
         $from = null,
         $fromName = null,
         $fileAttachment = null,
         $mode_smtp = null,
-        $templatePath = _PS_MAIL_DIR_,
         $die = false,
-        $idShop = null,
         $bcc = null,
         $replyTo = null,
         $replyToName = null
     ) {
-        if (!$idShop) {
-            $idShop = Context::getContext()->shop->id;
-        }
 
-        if (is_numeric($idShop) && $idShop) {
-            $shop = new Shop((int) $idShop);
-        }
-
-        $configuration = Configuration::getMultiple(
+        $configuration = self::getMultiple(
             [
-                'PS_SHOP_EMAIL',
-                'PS_MAIL_METHOD',
-                'PS_MAIL_SERVER',
-                'PS_MAIL_USER',
-                'PS_MAIL_PASSWD',
-                'PS_SHOP_NAME',
-                'PS_MAIL_SMTP_ENCRYPTION',
-                'PS_MAIL_SMTP_PORT',
-                'PS_MAIL_TYPE',
-            ],
-            null,
-            null,
-            $idShop
+                'PULSE_SHOP_EMAIL',
+                'PULSE_MAIL_METHOD',
+                'PULSE_MAIL_SERVER',
+                'PULSE_MAIL_USER',
+                'PULSE_MAIL_PASSWD',
+                'PULSE_SHOP_NAME',
+                'PULSE_MAIL_SMTP_ENCRYPTION',
+                'PULSE_MAIL_SMTP_PORT',
+                'PULSE_MAIL_TYPE',
+            ]
         );
 
         // Returns immediately if emails are deactivated
-        if ($configuration['PS_MAIL_METHOD'] == self::METHOD_DISABLE) {
+        if ($configuration['PULSE_MAIL_METHOD'] == self::METHOD_DISABLE) {
             return true;
         }
 
-        if (!isset($configuration['PS_MAIL_SMTP_ENCRYPTION']) ||
-            Tools::strtolower($configuration['PS_MAIL_SMTP_ENCRYPTION']) === 'off'
+        if (!isset($configuration['PULSE_MAIL_SMTP_ENCRYPTION']) ||
+            self::strtolower($configuration['PULSE_MAIL_SMTP_ENCRYPTION']) === 'off'
         ) {
-            $configuration['PS_MAIL_SMTP_ENCRYPTION'] = false;
+            $configuration['PULSE_MAIL_SMTP_ENCRYPTION'] = false;
         }
 
-        if (!isset($configuration['PS_MAIL_SMTP_PORT'])) {
-            $configuration['PS_MAIL_SMTP_PORT'] = 'default';
+        if (!isset($configuration['PULSE_MAIL_SMTP_PORT'])) {
+            $configuration['PULSE_MAIL_SMTP_PORT'] = 'default';
         }
 
         /*
          * Sending an e-mail can be of vital importance for the merchant, when his password
          * is lost for example, so we must not die but do our best to send the e-mail.
          */
-        if (!isset($from) || !Validate::isEmail($from)) {
-            $from = $configuration['PS_SHOP_EMAIL'];
-        }
-
-        if (!Validate::isEmail($from)) {
-            $from = null;
+        if (!isset($from)) {
+            $from = $configuration['PULSE_SHOP_EMAIL'];
         }
 
         // $from_name is not that important, no need to die if it is not valid
-        if (!isset($fromName) || !Validate::isMailName($fromName)) {
-            $fromName = $configuration['PS_SHOP_NAME'];
-        }
-
-        if (!Validate::isMailName($fromName)) {
-            $fromName = null;
-        }
-
-        /*
-         * It would be difficult to send an e-mail if the e-mail is not valid,
-         * so this time we can die if there is a problem.
-         */
-        if (!is_array($to) && !Validate::isEmail($to)) {
-            self::dieOrLog($die, 'Error: parameter "to" is corrupted');
-
-            return false;
-        }
-
-        // if bcc is not null, make sure it's a vaild e-mail
-        if (null !== $bcc && !is_array($bcc) && !Validate::isEmail($bcc)) {
-            self::dieOrLog($die, 'Error: parameter "bcc" is corrupted');
-            $bcc = null;
-        }
-
-        if (!is_array($templateVars)) {
-            $templateVars = [];
-        }
-
-        // Do not crash for this error, that may be a complicated customer name
-        if (is_string($toName) && !empty($toName) && !Validate::isMailName($toName)) {
-            $toName = null;
-        }
-
-        if (!Validate::isTplName($template)) {
-            self::dieOrLog($die, 'Error: invalid e-mail template');
-
-            return false;
-        }
-
-        if (!Validate::isMailSubject($subject)) {
-            self::dieOrLog($die, 'Error: invalid e-mail subject');
-
-            return false;
+        if (!isset($fromName)) {
+            $fromName = $configuration['PULSE_SHOP_NAME'];
         }
 
         /* Construct multiple recipients list if needed */
@@ -205,11 +123,6 @@ class Sender
         if (is_array($to) && isset($to)) {
             foreach ($to as $key => $addr) {
                 $addr = trim($addr);
-                if (!Validate::isEmail($addr)) {
-                    self::dieOrLog($die, 'Error: invalid e-mail address');
-
-                    return false;
-                }
 
                 if (is_array($toName) && isset($toName[$key])) {
                     $addrName = $toName[$key];
@@ -217,7 +130,7 @@ class Sender
                     $addrName = $toName;
                 }
 
-                $addrName = ($addrName == null || $addrName == $addr || !Validate::isGenericName($addrName)) ?
+                $addrName = ($addrName == null || $addrName == $addr) ?
                           '' :
                           self::mimeEncode($addrName);
                 $message->addTo(self::toPunycode($addr), $addrName);
@@ -233,12 +146,6 @@ class Sender
         if (isset($bcc) && is_array($bcc)) {
             foreach ($bcc as $addr) {
                 $addr = trim($addr);
-                if (!Validate::isEmail($addr)) {
-                    self::dieOrLog($die, 'Error: invalid e-mail address');
-
-                    return false;
-                }
-
                 $message->addBcc(self::toPunycode($addr));
             }
         } elseif (isset($bcc)) {
@@ -247,28 +154,20 @@ class Sender
 
         try {
             /* Connect with the appropriate configuration */
-            if ($configuration['PS_MAIL_METHOD'] == self::METHOD_SMTP) {
-                if (empty($configuration['PS_MAIL_SERVER']) || empty($configuration['PS_MAIL_SMTP_PORT'])) {
+            if ($configuration['PULSE_MAIL_METHOD'] == self::METHOD_SMTP) {
+                if (empty($configuration['PULSE_MAIL_SERVER']) || empty($configuration['PULSE_MAIL_SMTP_PORT'])) {
                     self::dieOrLog($die, 'Error: invalid SMTP server or SMTP port');
-
                     return false;
                 }
 
                 $connection = (new Swift_SmtpTransport(
-                    $configuration['PS_MAIL_SERVER'],
-                    $configuration['PS_MAIL_SMTP_PORT'],
-                    $configuration['PS_MAIL_SMTP_ENCRYPTION']
+                    $configuration['PULSE_MAIL_SERVER'],
+                    $configuration['PULSE_MAIL_SMTP_PORT'],
+                    $configuration['PULSE_MAIL_SMTP_ENCRYPTION']
                 ))
-                    ->setUsername($configuration['PS_MAIL_USER'])
-                    ->setPassword($configuration['PS_MAIL_PASSWD']);
+                    ->setUsername($configuration['PULSE_MAIL_USER'])
+                    ->setPassword($configuration['PULSE_MAIL_PASSWD']);
             } else {
-                /**
-                 * mail() support was removed from SwiftMailer for security reasons
-                 * previously => $connection = \Swift_MailTransport::newInstance();
-                 * Use Swift_SendmailTransport instead
-                 *
-                 * @see https://github.com/swiftmailer/swiftmailer/issues/866
-                 */
                 $connection = new Swift_SendmailTransport();
             }
 
@@ -277,85 +176,6 @@ class Sender
             }
 
             $swift = new Swift_Mailer($connection);
-            /* Get templates content */
-            $iso = Language::getIsoById((int) $idLang);
-            $isoDefault = Language::getIsoById((int) Configuration::get('PS_LANG_DEFAULT'));
-            $isoArray = [];
-            if ($iso) {
-                $isoArray[] = $iso;
-            }
-
-            if ($isoDefault && $iso !== $isoDefault) {
-                $isoArray[] = $isoDefault;
-            }
-
-            if (!in_array('en', $isoArray)) {
-                $isoArray[] = 'en';
-            }
-
-            $moduleName = false;
-
-            // get templatePath
-            if (preg_match('#' . $shop->physical_uri . 'modules/#', str_replace(DIRECTORY_SEPARATOR, '/', $templatePath)) &&
-                preg_match('#modules/([a-z0-9_-]+)/#ui', str_replace(DIRECTORY_SEPARATOR, '/', $templatePath), $res)
-            ) {
-                $moduleName = $res[1];
-            }
-
-            foreach ($isoArray as $isoCode) {
-                $isoTemplate = $isoCode . '/' . $template;
-                $templatePath = self::getTemplateBasePath($isoTemplate, $moduleName, $shop->theme);
-
-                if (!file_exists($templatePath . $isoTemplate . '.txt') &&
-                    (
-                        $configuration['PS_MAIL_TYPE'] == Mail::TYPE_BOTH ||
-                        $configuration['PS_MAIL_TYPE'] == Mail::TYPE_TEXT
-                    )
-                ) {
-                    PrestaShopLogger::addLog(
-                        Context::getContext()->getTranslator()->trans(
-                            'Error - The following e-mail template is missing: %s',
-                            [$templatePath . $isoTemplate . '.txt'],
-                            'Admin.Advparameters.Notification'
-                        )
-                    );
-                } elseif (!file_exists($templatePath . $isoTemplate . '.html') &&
-                          (
-                              $configuration['PS_MAIL_TYPE'] == Mail::TYPE_BOTH ||
-                              $configuration['PS_MAIL_TYPE'] == Mail::TYPE_HTML
-                          )
-                ) {
-                    PrestaShopLogger::addLog(
-                        Context::getContext()->getTranslator()->trans(
-                            'Error - The following e-mail template is missing: %s',
-                            [$templatePath . $isoTemplate . '.html'],
-                            'Admin.Advparameters.Notification'
-                        )
-                    );
-                } else {
-                    $templatePathExists = true;
-
-                    break;
-                }
-            }
-
-            if (empty($templatePathExists)) {
-                self::dieOrLog($die, 'Error - The following e-mail template is missing: %s', [$template]);
-
-                return false;
-            }
-
-            $templateHtml = '';
-            $templateTxt = '';
-
-            $templateHtml .= Tools::file_get_contents($templatePath . $isoTemplate . '.html');
-            $templateTxt .= strip_tags(
-                html_entity_decode(
-                    Tools::file_get_contents($templatePath . $isoTemplate . '.txt'),
-                    null,
-                    'utf-8'
-                )
-            );
 
             /* Create mail and attach differents parts */
             $message->setSubject($subject);
@@ -365,7 +185,7 @@ class Sender
             /* Set Message-ID - getmypid() is blocked on some hosting */
             $message->setId(Sender::generateId());
 
-            if (!($replyTo && Validate::isEmail($replyTo))) {
+            if (!($replyTo)) {
                 $replyTo = $from;
             }
 
@@ -373,52 +193,7 @@ class Sender
                 $message->setReplyTo($replyTo, ($replyToName !== '' ? $replyToName : null));
             }
 
-            if (false !== Configuration::get('PS_LOGO_MAIL') &&
-                file_exists(_PS_IMG_DIR_ . Configuration::get('PS_LOGO_MAIL', null, null, $idShop))
-            ) {
-                $logo = _PS_IMG_DIR_ . Configuration::get('PS_LOGO_MAIL', null, null, $idShop);
-            } else {
-                if (file_exists(_PS_IMG_DIR_ . Configuration::get('PS_LOGO', null, null, $idShop))) {
-                    $logo = _PS_IMG_DIR_ . Configuration::get('PS_LOGO', null, null, $idShop);
-                } else {
-                    $templateVars['{shop_logo}'] = '';
-                }
-            }
-
-            ShopUrl::cacheMainDomainForShop((int) $idShop);
-            /* don't attach the logo as */
-            if (isset($logo)) {
-                $templateVars['{shop_logo}'] = $message->embed(\Swift_Image::fromPath($logo));
-            }
-
-            if ((Context::getContext()->link instanceof Link) === false) {
-                Context::getContext()->link = new Link();
-            }
-
-            $templateVars['{shop_name}'] = Tools::safeOutput($configuration['PS_SHOP_NAME']);
-            $templateVars['{shop_url}'] = Context::getContext()->link->getPageLink(
-                'index',
-                true,
-                $idLang,
-                null,
-                false,
-                $idShop
-            );
-            $templateVars['{color}'] = Tools::safeOutput(Configuration::get('PS_MAIL_COLOR', null, null, $idShop));
-            // Get extra template_vars
-            $extraTemplateVars = [];
-            $templateVars = array_merge($templateVars, $extraTemplateVars);
-            $swift->registerPlugin(new Swift_Plugins_DecoratorPlugin([self::toPunycode($toPlugin) => $templateVars]));
-            if ($configuration['PS_MAIL_TYPE'] == Mail::TYPE_BOTH ||
-                $configuration['PS_MAIL_TYPE'] == Mail::TYPE_TEXT
-            ) {
-                $message->addPart($templateTxt, 'text/plain', 'utf-8');
-            }
-            if ($configuration['PS_MAIL_TYPE'] == Mail::TYPE_BOTH ||
-                $configuration['PS_MAIL_TYPE'] == Mail::TYPE_HTML
-            ) {
-                $message->addPart($templateHtml, 'text/html', 'utf-8');
-            }
+            $message->addPart($templateHtml, 'text/html', 'utf-8');
 
             if ($fileAttachment && !empty($fileAttachment)) {
                 foreach ($fileAttachment as $attachment) {
@@ -430,210 +205,11 @@ class Sender
             $message->setFrom([$from => $fromName]);
             $send = $swift->send($message);
 
-            ShopUrl::resetMainDomainCache();
-
-            if ($send && Configuration::get('PS_LOG_EMAILS')) {
-                $mail = new Mail();
-                $mail->template = Tools::substr($template, 0, 62);
-                $mail->subject = Tools::substr($subject, 0, 255);
-                $mail->id_lang = (int) $idLang;
-                $recipientsTo = $message->getTo();
-                $recipientsCc = $message->getCc();
-                $recipientsBcc = $message->getBcc();
-                if (!is_array($recipientsTo)) {
-                    $recipientsTo = [];
-                }
-                if (!is_array($recipientsCc)) {
-                    $recipientsCc = [];
-                }
-                if (!is_array($recipientsBcc)) {
-                    $recipientsBcc = [];
-                }
-                foreach (array_merge($recipientsTo, $recipientsCc, $recipientsBcc) as $email => $recipient_name) {
-                    /* @var Swift_Address $recipient */
-                    $mail->id = null;
-                    $mail->recipient = Tools::substr($email, 0, 255);
-                    $mail->add();
-                }
-            }
-
             return $send;
         } catch (Swift_SwiftException $e) {
-            PrestaShopLogger::addLog(
-                'Swift Error: ' . $e->getMessage(),
-                3,
-                null,
-                'Swift_Message'
-            );
-
+            # $e->getMessage();
             return false;
         }
-    }
-
-    protected static function getTemplateBasePath($isoTemplate, $moduleName, $theme)
-    {
-        $basePathList = [
-            _PS_ROOT_DIR_ . '/themes/' . $theme->getName() . '/',
-            _PS_ROOT_DIR_ . '/themes/' . $theme->get('parent') . '/',
-            _PS_ROOT_DIR_,
-        ];
-
-        if ($moduleName !== false) {
-            $templateRelativePath = '/modules/' . $moduleName . '/mails/';
-        } else {
-            $templateRelativePath = '/mails/';
-        }
-
-        foreach ($basePathList as $base) {
-            $templatePath = $base . $templateRelativePath;
-            if (file_exists($templatePath . $isoTemplate . '.txt') || file_exists($templatePath . $isoTemplate . '.html')) {
-                return $templatePath;
-            }
-        }
-
-        return '';
-    }
-
-    /**
-     * @param $idMail Mail ID
-     *
-     * @return bool Whether removal succeeded
-     */
-    public static function eraseLog($idMail)
-    {
-        return Db::getInstance()->delete('mail', 'id_mail = ' . (int) $idMail);
-    }
-
-    /**
-     * @return bool
-     */
-    public static function eraseAllLogs()
-    {
-        return Db::getInstance()->execute('TRUNCATE TABLE ' . _DB_PREFIX_ . 'mail');
-    }
-
-    /**
-     * Send a test email.
-     *
-     * @param bool $smtpChecked Is SMTP checked?
-     * @param string $smtpServer SMTP Server hostname
-     * @param string $content Content of the email
-     * @param string $subject Subject of the email
-     * @param bool $type Deprecated
-     * @param string $to To email address
-     * @param string $from From email address
-     * @param string $smtpLogin SMTP login name
-     * @param string $smtpPassword SMTP password
-     * @param int $smtpPort SMTP Port
-     * @param bool|string $smtpEncryption Encryption type. "off" or false disable encryption.
-     *
-     * @return bool|string True if succeeded, otherwise the error message
-     */
-    public static function sendMailTest(
-        $smtpChecked,
-        $smtpServer,
-        $content,
-        $subject,
-        $type,
-        $to,
-        $from,
-        $smtpLogin,
-        $smtpPassword,
-        $smtpPort,
-        $smtpEncryption
-    ) {
-        $result = false;
-
-        try {
-            if ($smtpChecked) {
-                if (Tools::strtolower($smtpEncryption) === 'off') {
-                    $smtpEncryption = false;
-                }
-                $connection = (new Swift_SmtpTransport(
-                    $smtpServer,
-                    $smtpPort,
-                    $smtpEncryption
-                ))
-                    ->setUsername($smtpLogin)
-                    ->setPassword($smtpPassword);
-            } else {
-                /**
-                 * mail() support was removed from SwiftMailer for security reasons
-                 * previously => $connection = \Swift_MailTransport::newInstance();
-                 * Use Swift_SendmailTransport instead
-                 *
-                 * @see https://github.com/swiftmailer/swiftmailer/issues/866
-                 */
-                $connection = new Swift_SendmailTransport();
-            }
-
-            $swift = new Swift_Mailer($connection);
-            $message = new Swift_Message();
-
-            $message
-                ->setFrom($from)
-                ->setTo($to)
-                ->setSubject($subject)
-                ->setBody($content);
-
-            if ($swift->send($message)) {
-                $result = true;
-            }
-        } catch (\Swift_SwiftException $e) {
-            $result = $e->getMessage();
-        }
-
-        return $result;
-    }
-
-    /**
-     * This method is used to get the translation for email Object.
-     * For an object is forbidden to use htmlentities,
-     * we have to return a sentence with accents.
-     *
-     * @param string $string raw sentence (write directly in file)
-     *
-     * @return mixed
-     */
-    public static function l($string, $idLang = null, Context $context = null)
-    {
-        global $_LANGMAIL;
-
-        if (!$context) {
-            $context = Context::getContext();
-        }
-
-        if ($idLang === null) {
-            $idLang = (!isset($context->language) || !is_object($context->language)) ?
-                    (int) Configuration::get('PS_LANG_DEFAULT') :
-                    (int) $context->language->id;
-        }
-
-        $isoCode = Language::getIsoById((int) $idLang);
-
-        $file_core = _PS_ROOT_DIR_ . '/mails/' . $isoCode . '/lang.php';
-        if (Tools::file_exists_cache($file_core) && empty($_LANGMAIL)) {
-            include $file_core;
-        }
-
-        $fileTheme = _PS_THEME_DIR_ . 'mails/' . $isoCode . '/lang.php';
-        if (Tools::file_exists_cache($fileTheme)) {
-            include $fileTheme;
-        }
-
-        if (!is_array($_LANGMAIL)) {
-            return str_replace('"', '&quot;', $string);
-        }
-
-        $key = str_replace('\'', '\\\'', $string);
-
-        return str_replace(
-            '"',
-            '&quot;',
-            Tools::stripslashes(
-                (array_key_exists($key, $_LANGMAIL) && !empty($_LANGMAIL[$key])) ? $_LANGMAIL[$key] : $string
-            )
-        );
     }
 
     /* Rewrite of Swift_Message::generateId() without getmypid() */
@@ -658,7 +234,7 @@ class Sender
      */
     public static function isMultibyte($data)
     {
-        $length = Tools::strlen($data);
+        $length = self::strlen($data);
         for ($i = 0; $i < $length; ++$i) {
             if (ord(($data[$i])) > 128) {
                 return true;
@@ -679,21 +255,21 @@ class Sender
      */
     public static function mimeEncode($string, $charset = 'UTF-8', $newline = "\r\n")
     {
-        if (!self::isMultibyte($string) && Tools::strlen($string) < 75) {
+        if (!self::isMultibyte($string) && self::strlen($string) < 75) {
             return $string;
         }
 
-        $charset = Tools::strtoupper($charset);
+        $charset = self::strtoupper($charset);
         $start = '=?' . $charset . '?B?';
         $end = '?=';
         $sep = $end . $newline . ' ' . $start;
-        $length = 75 - Tools::strlen($start) - Tools::strlen($end);
+        $length = 75 - self::strlen($start) - self::strlen($end);
         $length = $length - ($length % 4);
 
         if ($charset === 'UTF-8') {
             $parts = [];
             $maxchars = floor(($length * 3) / 4);
-            $stringLength = Tools::strlen($string);
+            $stringLength = self::strlen($string);
 
             while ($stringLength > $maxchars) {
                 $i = (int) $maxchars;
@@ -703,9 +279,9 @@ class Sender
                     $result = ord($string[--$i]);
                 }
 
-                $parts[] = base64_encode(Tools::substr($string, 0, $i));
-                $string = Tools::substr($string, $i);
-                $stringLength = Tools::strlen($string);
+                $parts[] = base64_encode(self::substr($string, 0, $i));
+                $string = self::substr($string, $i);
+                $stringLength = self::strlen($string);
             }
 
             $parts[] = base64_encode($string);
@@ -718,16 +294,6 @@ class Sender
         return $start . $string . $end;
     }
 
-    /**
-     * Automatically convert email to Punycode.
-     *
-     * Try to use INTL_IDNA_VARIANT_UTS46 only if defined, else use INTL_IDNA_VARIANT_2003
-     * See https://wiki.php.net/rfc/deprecate-and-remove-intl_idna_variant_2003
-     *
-     * @param string $to Email address
-     *
-     * @return string
-     */
     public static function toPunycode($to)
     {
         $address = explode('@', $to);
@@ -750,6 +316,55 @@ class Sender
         return $address[0] . '@' . idn_to_ascii($address[1]);
     }
 
+    public static function substr($str, $start, $length = false, $encoding = 'utf-8')
+    {
+        if (is_array($str)) {
+            return false;
+        }
+        if (function_exists('mb_substr')) {
+            return mb_substr($str, (int) $start, ($length === false ? self::strlen($str) : (int) $length), $encoding);
+        }
+
+        return substr($str, $start, ($length === false ? self::strlen($str) : (int) $length));
+    }
+
+    public static function strtoupper($str)
+    {
+        if (is_array($str)) {
+            return false;
+        }
+        if (function_exists('mb_strtoupper')) {
+            return mb_strtoupper($str, 'utf-8');
+        }
+
+        return strtoupper($str);
+    }
+
+    public static function strlen($str, $encoding = 'UTF-8')
+    {
+        if (is_array($str)) {
+            return false;
+        }
+        $str = html_entity_decode($str, ENT_COMPAT, 'UTF-8');
+        if (function_exists('mb_strlen')) {
+            return mb_strlen($str, $encoding);
+        }
+
+        return strlen($str);
+    }
+
+    public static function strtolower($str)
+    {
+        if (is_array($str)) {
+            return false;
+        }
+        if (function_exists('mb_strtolower')) {
+            return mb_strtolower($str, 'utf-8');
+        }
+
+        return strtolower($str);
+    }
+
     /**
      * Generic function to dieOrLog with translations.
      *
@@ -760,17 +375,13 @@ class Sender
      */
     protected static function dieOrLog(
         $die,
-        $message,
-        $templates = [],
-        $domain = 'Admin.Advparameters.Notification'
+        $message
     ) {
-        Tools::dieOrLog(
-            Context::getContext()->getTranslator()->trans(
-                $message,
-                $templates,
-                $domain
-            ),
-            $die
-        );
+        if($die){
+          die();
+        }else{
+
+        }
+
     }
 }
