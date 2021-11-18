@@ -51,8 +51,8 @@ class Sender
     {
         $config = array();
         foreach ($configs as $config_key) {
-            if( defined(''.$config_key) ){
-                $config[$config_key] = defined(''.$config_key);
+            if( defined($config_key) ){
+                $config[$config_key] = constant($config_key);
             }else{
                 $config[$config_key] = false;
             }
@@ -77,15 +77,14 @@ class Sender
 
         $configuration = self::getMultiple(
             [
-                'PULSE_SHOP_EMAIL',
+                'PULSE_SITE_EMAIL',
                 'PULSE_MAIL_METHOD',
                 'PULSE_MAIL_SERVER',
                 'PULSE_MAIL_USER',
                 'PULSE_MAIL_PASSWD',
-                'PULSE_SHOP_NAME',
+                'PULSE_SITE_NAME',
                 'PULSE_MAIL_SMTP_ENCRYPTION',
-                'PULSE_MAIL_SMTP_PORT',
-                'PULSE_MAIL_TYPE',
+                'PULSE_MAIL_SMTP_PORT'
             ]
         );
 
@@ -109,12 +108,12 @@ class Sender
          * is lost for example, so we must not die but do our best to send the e-mail.
          */
         if (!isset($from)) {
-            $from = $configuration['PULSE_SHOP_EMAIL'];
+            $from = $configuration['PULSE_SITE_EMAIL'];
         }
 
         // $from_name is not that important, no need to die if it is not valid
         if (!isset($fromName)) {
-            $fromName = $configuration['PULSE_SHOP_NAME'];
+            $fromName = $configuration['PULSE_SITE_NAME'];
         }
 
         /* Construct multiple recipients list if needed */
@@ -207,7 +206,7 @@ class Sender
 
             return $send;
         } catch (Swift_SwiftException $e) {
-            # $e->getMessage();
+            self::dieOrLog($die, $e->getMessage());
             return false;
         }
     }
@@ -377,6 +376,7 @@ class Sender
         $die,
         $message
     ) {
+        echo($message);
         if($die){
           die();
         }else{
